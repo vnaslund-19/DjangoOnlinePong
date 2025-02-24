@@ -1,14 +1,8 @@
-//frame id
-let id;
-let aiIntervalId;
-
 // Board
 let board;
 let context;
 
 // Variables provided by user (initialized in global scope)
-let playAI;
-let msAIcalcRefresh;
 let startSpeed;
 let speedUpMultiple;
 let playerHeight = 50;
@@ -39,6 +33,8 @@ const accentColor = getComputedStyle(document.documentElement).getPropertyValue(
 const lightColor = getComputedStyle(document.documentElement).getPropertyValue('--light').trim();
 const dangerColor = getComputedStyle(document.documentElement).getPropertyValue('--danger').trim();
 
+let playerId = null;  // Store player ID globally
+
 document.addEventListener("DOMContentLoaded", async () => {
     await connectToOnlineGame();  // Connect immediately when the page loads
 });
@@ -46,12 +42,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 async function connectToOnlineGame() {
     try {
         // Fetch or create a new game session
-        const response = await fetch("http://localhost:8000/match/join/", { credentials: "include" }); 
+        const response = await fetch("http://localhost:8000/match/join/");
         if (!response.ok) throw new Error("Failed to join online match");
 
         const data = await response.json();
-        if (data && data.game_key) {
+        if (data && data.game_key && data.player_id) {
             console.log("Connected to game session:", data.game_key);
+            playerId = data.player_id;  // Store player ID globally
             return setupWebSocket(data.game_key);
         }
     } catch (error) {
@@ -59,7 +56,9 @@ async function connectToOnlineGame() {
     }
 }
 
-function setupWebSocket(gameKey) {
+
+function setupWebSocket(gameKey)
+{
     const socket = new WebSocket(`ws://localhost:8000/ws/game/${gameKey}/`);
 
     // Init game board
@@ -70,7 +69,9 @@ function setupWebSocket(gameKey) {
 
     socket.onopen = () => {
         console.log("WebSocket connected:", gameKey);
-        socket.send(JSON.stringify({ action: "ready" })); // Send "ready" signal
+        if (playerId) {
+            socket.send(JSON.stringify({ action: "ready", player_id: playerId })); // Send player ID
+        }
     };
 
     socket.onmessage = (event) => {
@@ -88,7 +89,7 @@ function setupWebSocket(gameKey) {
 
     window.addEventListener("beforeunload", () => {
         if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ action: "move", direction: "STOP" }));
+            socket.send(JSON.stringify({ action: "move", player_id: playerId, direction: "STOP" }));
         }
     });
 
@@ -100,6 +101,7 @@ function setupWebSocket(gameKey) {
 
     socket.onerror = (error) => console.error("WebSocket Error:", error);
 }
+
 
 function updateGameState(state) {
     if (!state || !state.players || !state.ball) return; // Ensure valid data
@@ -150,7 +152,7 @@ function renderGame() {
 
 function keyDownHandlerOnline(event, socket) {
     if (["KeyW", "KeyS", "ArrowUp", "ArrowDown"].includes(event.code)) event.preventDefault();
-    if (socket.readyState !== WebSocket.OPEN) return;
+    if (socket.readyState !== WebSocket.OPEN || !playerId) return;  // Ensure playerId exists
 
     let direction = null;
 
@@ -169,13 +171,13 @@ function keyDownHandlerOnline(event, socket) {
     }
 
     if (direction) {
-        socket.send(JSON.stringify({ action: "move", direction: direction }));
+        socket.send(JSON.stringify({ action: "move", player_id: playerId, direction: direction }));
     }
 }
 
 function keyUpHandlerOnline(event, socket) {
     if (["KeyW", "KeyS", "ArrowUp", "ArrowDown"].includes(event.code)) event.preventDefault();
-    if (socket.readyState !== WebSocket.OPEN) return;
+    if (socket.readyState !== WebSocket.OPEN || !playerId) return;  // Ensure playerId exists
 
     let direction = "STOP";
 
@@ -193,5 +195,5 @@ function keyUpHandlerOnline(event, socket) {
         if (keyState.up || keyState.w) direction = "UP";
     }
 
-    socket.send(JSON.stringify({ action: "move", direction: direction }));
+    socket.send(JSON.stringify({ action: "move", player_id: playerId, direction: direction }));
 }

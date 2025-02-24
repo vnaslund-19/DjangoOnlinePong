@@ -8,18 +8,18 @@ from game.logic import Game
 class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         """Handles new WebSocket connections."""
-        self.room_name = self.scope['url_route']['kwargs']['room_name']
-        self.room_group_name = f'game_{self.room_name}'
+        self.game_key = self.scope['url_route']['kwargs']['game_key']
+        self.room_group_name = f'game_{self.game_key}'
 
-        self.user = self.scope["user"]
-        if not self.user.is_authenticated:
-            await self.close()
-            return
+        # Assign a unique player ID (UUID)
+        self.player_id = str(uuid.uuid4())
 
         # Fetch or create game
-        self.game = await sync_to_async(self.get_or_create_game)(self.room_name, self.user)
-        
-        if self.user not in [self.game.player1, self.game.player2]:
+        self.game = await sync_to_async(self.get_or_create_game)(self.game_key)
+
+        # Assign the player to the game
+        success = await sync_to_async(self.assign_player)(self.player_id)
+        if not success:
             await self.close()
             return
 
@@ -27,34 +27,48 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
         # Auto-start when both players are present
-        if self.game.player1 and self.game.player2 and self.game.status != "in_progress":
+        if self.game.player1_id and self.game.player2_id and self.game.status != "in_progress":
             await self.start_game()
 
     @sync_to_async
-    def get_or_create_game(self, game_key, user):
+    def get_or_create_game(self, game_key):
         """Fetches an existing game or creates a new one."""
         game, created = PongGame.objects.get_or_create(
             game_key=uuid.UUID(game_key),
-            defaults={"status": "pending", "player1": user}
+            defaults={"status": "pending"}
         )
-        if not created and game.status == "pending" and game.player1 != user and not game.player2:
-            game.player2 = user
-            game.save()
         return game
+
+    @sync_to_async
+    def assign_player(self, player_id): # NEW, for mini-project
+        """Assigns a player to the game. If the second player joins, start the game."""
+        if self.game.status == "finished":
+            return False  # Game is over, don't accept new players
+
+        if not self.game.player1_id:
+            self.game.player1_id = player_id
+        elif not self.game.player2_id:
+            self.game.player2_id = player_id
+            self.game.status = "in_progress"  # Start the game when the second player joins
+        else:
+            return False  # Game is already full
+
+        self.game.save()
+        return True
 
     async def disconnect(self, close_code):
         """Handles player disconnection."""
-        if self.user == self.game.player1:
-            self.game.player1 = None
-        elif self.user == self.game.player2:
-            self.game.player2 = None
+        if self.player_id == self.game.player1_id:
+            self.game.player1_id = None
+        elif self.player_id == self.game.player2_id:
+            self.game.player2_id = None
 
         await sync_to_async(self.game.save)()
 
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
-        # Notify other player if someone disconnects
-        if not self.game.player1 and not self.game.player2:
+        # Delete the game if both players leave
+        if not self.game.player1_id and not self.game.player2_id:
             await sync_to_async(self.game.delete)()
         else:
             await self.channel_layer.group_send(
@@ -62,7 +76,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 {
                     'type': 'player_disconnect',
                     'status': 'player_disconnected',
-                    'message': f'{self.user.username} has disconnected.'
+                    'message': f'A player has disconnected.'
                 }
             )
 
@@ -88,7 +102,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     @sync_to_async
     def update_player_movement(self, direction):
         """Updates player movement based on direction."""
-        player_key = "player1" if self.user == self.game.player1 else "player2"
+        if self.player_id == self.game.player1_id:
+            player_key = "player1"
+        elif self.player_id == self.game.player2_id:
+            player_key = "player2"
+        else:
+            return  # Ignore movement if player is not part of the game
 
         player_positions = self.game.player_positions
         current_y = player_positions[player_key]["y"]
@@ -141,12 +160,12 @@ class GameConsumer(AsyncWebsocketConsumer):
         return {
             "players": {
                 "player1": {
-                    "username": self.game.player1.username if self.game.player1 else "Waiting...",
+                    "player_id": self.game.player1_id or "Waiting...",
                     **self.game.player_positions.get("player1", {"x": self.game.x_margin, "y": self.game.p_y_mid}),
                     "score": self.game.player1_score
                 },
                 "player2": {
-                    "username": self.game.player2.username if self.game.player2 else "Waiting...",
+                    "player_id": self.game.player2_id or "Waiting...",
                     **self.game.player_positions.get("player2", {"x": self.game.p2_xpos, "y": self.game.p_y_mid}),
                     "score": self.game.player2_score
                 }

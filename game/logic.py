@@ -140,9 +140,9 @@ class Game:
     def _check_game_over(self):
         """Check if a player has won the game and persist scores."""
         if self.game.player1_score >= self.points_to_win:
-            self.game.winner = self.game.player1
+            self.game.winner = self.game.player1_id  # Store UUID instead of user
         elif self.game.player2_score >= self.points_to_win:
-            self.game.winner = self.game.player2
+            self.game.winner = self.game.player2_id  # Store UUID instead of user
 
         if self.game.winner:
             self.game.status = "finished"
@@ -153,9 +153,17 @@ class Game:
         return {
             "ball": self.ball,
             "players": {
-                "player1": self.game.player_positions.get("player1", {"x": self.x_margin, "y": self.p_y_mid}), 
-                "player2": self.game.player_positions.get("player2", {"x": self.p2_xpos, "y": self.p_y_mid})
+                "player1": {
+                    "player_id": self.game.player1_id or "Waiting...",
+                    **self.game.player_positions.get("player1", {"x": self.x_margin, "y": self.p_y_mid}),
+                    "score": self.game.player1_score
+                },
+                "player2": {
+                    "player_id": self.game.player2_id or "Waiting...",
+                    **self.game.player_positions.get("player2", {"x": self.p2_xpos, "y": self.p_y_mid}),
+                    "score": self.game.player2_score
+                }
             },
             "status": self.game.status,
-            "winner": self.game.winner.username if self.game.winner else None
+            "winner": self.game.winner  # Now stores player1_id or player2_id
         }

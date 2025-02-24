@@ -1,48 +1,29 @@
 from django.db import models
-from django.contrib.auth.models import AbstractUser, Group, Permission
 import uuid
 import random
 import math
 
-class User(AbstractUser):
-    """Custom user model with necessary Pong game tracking."""
-    username = models.CharField(max_length=150, unique=True)
-    friends = models.ManyToManyField('self', symmetrical=True, blank=True)
-
-    # Fix auth conflicts
-    groups = models.ManyToManyField(Group, related_name="game_users", blank=True)
-    user_permissions = models.ManyToManyField(Permission, related_name="game_users_permissions", blank=True)
-
-    @property
-    def games(self):
-        """Returns all games where this user is either player1 or player2."""
-        return self.player1_games.all() | self.player2_games.all()
-
-    def __str__(self):
-        return self.username
-
-
 class PongGame(models.Model):
-    """Model representing a basic Pong game session."""
+    """Model representing an online 1v1 Pong game session."""
     
     # Players & Status
-    player1 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='player1_games')
-    player2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='player2_games')
-    winner = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='won_games')
+    player1_id = models.UUIDField(null=True, blank=True)  # Unique identifier for Player 1
+    player2_id = models.UUIDField(null=True, blank=True)  # Unique identifier for Player 2
+
+    connected_players = models.JSONField(default=list, blank=True)  # Ensures an empty list instead of NULL
+    ready_players = models.JSONField(default=list, blank=True)
     
     status = models.CharField(
         max_length=20,
         choices=[
-            ('pending', 'Pending'),
-            ('in_progress', 'In Progress'),
-            ('finished', 'Finished')
+            ('pending', 'Pending'),        # Waiting for second player
+            ('in_progress', 'In Progress'),  # Game is actively being played
+            ('finished', 'Finished')       # Game has ended
         ],
         default='pending'
     )
     
     game_key = models.UUIDField(default=uuid.uuid4, unique=True)  # Unique game session identifier
-    connected_players = models.JSONField(default=list)  # Tracks active WebSocket connections
-    ready_players = models.JSONField(default=list)  # Tracks players ready to start
     
     # Game Configuration
     board_width = models.IntegerField(default=700)
@@ -102,6 +83,22 @@ class PongGame(models.Model):
             "yVel": self.start_speed * math.sin(math.radians(angle))
         }
 
+    def assign_player(self, player_id): # NEW, for mini project
+        """Assigns a player to the game. If the second player joins, start the game."""
+        if self.status == "finished":
+            return False  # Game is over, don't accept new players
+
+        if not self.player1_id:
+            self.player1_id = player_id
+        elif not self.player2_id:
+            self.player2_id = player_id
+            self.status = "in_progress"  # Start the game when the second player joins
+        else:
+            return False  # Game is already full
+
+        self.save()
+        return True
+
     def save(self, *args, **kwargs):
         """Ensures default game state is initialized without overwriting existing values."""
         if not self.player_positions:
@@ -112,10 +109,6 @@ class PongGame(models.Model):
         if not self.ball_position:
             self.ball_position = self.initialize_ball()
         super().save(*args, **kwargs)
-
-    def get_opponent(self, user):
-        """Returns the opponent user in the game."""
-        return self.player2 if self.player1 == user else self.player1
 
     def update_position(self, player, position):
         """Updates a player's paddle position."""
@@ -138,4 +131,4 @@ class PongGame(models.Model):
         self.save()
 
     def __str__(self):
-        return f"Game {self.id}: {self.player1} vs {self.player2} (Key: {self.game_key})"
+        return f"Pong Game {self.id} (Key: {self.game_key}, Status: {self.status})"
