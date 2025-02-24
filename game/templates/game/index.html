@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong Game</title>
+
+    <!-- Load Static Files -->
+    {% load static %}
+
+    <!-- Link CSS -->
+    <link rel="stylesheet" href="{% static 'game/styles.css' %}">
+</head>
+<body>
+
+  <!-- Game Board Container -->
+    <div id="board-container" class="mt-4">
+        <div class="blinking-neon-frame p-3" id="neonFrame">
+            <canvas id="board"></canvas> 
+        </div>
+    </div>
+
+    <!-- Load JavaScript -->
+    <script src="{% static 'game/pong.js' %}"></script>
+
+</body>
+</html>

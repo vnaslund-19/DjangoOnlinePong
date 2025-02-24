@@ -2,8 +2,8 @@ import json
 import uuid
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
-from game.models import PongGame  # Adjusted for minimal project
-from game.logic import Game  # Game logic module
+from game.models import PongGame
+from game.logic import Game
 
 class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -11,66 +11,88 @@ class GameConsumer(AsyncWebsocketConsumer):
         self.room_name = self.scope['url_route']['kwargs']['room_name']
         self.room_group_name = f'game_{self.room_name}'
 
-        # Fetch game instance
-        self.game = await sync_to_async(self.get_game_by_key)(self.room_name)
-        if not self.game:
+        self.user = self.scope["user"]
+        if not self.user.is_authenticated:
             await self.close()
             return
 
-        # Join WebSocket group
-        await self.channel_layer.group_add(
-            self.room_group_name,
-            self.channel_name
-        )
+        # Fetch or create game
+        self.game = await sync_to_async(self.get_or_create_game)(self.room_name, self.user)
+        
+        if self.user not in [self.game.player1, self.game.player2]:
+            await self.close()
+            return
+
+        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
-    async def disconnect(self, close_code):
-        """Handles disconnection of a player."""
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
+        # Auto-start when both players are present
+        if self.game.player1 and self.game.player2 and self.game.status != "in_progress":
+            await self.start_game()
+
+    @sync_to_async
+    def get_or_create_game(self, game_key, user):
+        """Fetches an existing game or creates a new one."""
+        game, created = PongGame.objects.get_or_create(
+            game_key=uuid.UUID(game_key),
+            defaults={"status": "pending", "player1": user}
         )
+        if not created and game.status == "pending" and game.player1 != user and not game.player2:
+            game.player2 = user
+            game.save()
+        return game
+
+    async def disconnect(self, close_code):
+        """Handles player disconnection."""
+        if self.user == self.game.player1:
+            self.game.player1 = None
+        elif self.user == self.game.player2:
+            self.game.player2 = None
+
+        await sync_to_async(self.game.save)()
+
+        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+        # Notify other player if someone disconnects
+        if not self.game.player1 and not self.game.player2:
+            await sync_to_async(self.game.delete)()
+        else:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'player_disconnect',
+                    'status': 'player_disconnected',
+                    'message': f'{self.user.username} has disconnected.'
+                }
+            )
 
     async def receive(self, text_data):
-        """Handles incoming WebSocket messages from clients."""
+        """Handles incoming WebSocket messages."""
         try:
             data = json.loads(text_data)
-            action = data.get('action')
-            direction = data.get('direction')
+            action = data.get("action")
+            direction = data.get("direction")
 
-            if action == 'move' and direction:
+            if action == "move":
                 await self.update_player_movement(direction)
-            elif action == 'ready':
-                await self.mark_player_ready()
+            else:
+                await self.send(json.dumps({"status": "error", "message": f"Unknown action: {action}"}))
 
+            # Update game state after movement
             await self.calculate_ball_position()
             await self.broadcast_game_state()
 
-        except ValueError as e:
+        except Exception as e:
             await self.send(json.dumps({"status": "error", "message": str(e)}))
-        except Exception:
-            await self.send(json.dumps({"status": "error", "message": "Unexpected error"}))
-
-    @sync_to_async
-    def get_game_by_key(self, game_key):
-        """Fetches a game instance using the game_key."""
-        try:
-            return PongGame.objects.get(game_key=uuid.UUID(game_key))
-        except PongGame.DoesNotExist:
-            return None
 
     @sync_to_async
     def update_player_movement(self, direction):
-        """Updates player movement and persists changes."""
-        player_positions = self.game.player_positions
-        if "player1" not in player_positions or "player2" not in player_positions:
-            return
+        """Updates player movement based on direction."""
+        player_key = "player1" if self.user == self.game.player1 else "player2"
 
-        # Determine active player
-        player_key = "player1" if len(self.game.ready_players) < 1 else "player2"
+        player_positions = self.game.player_positions
         current_y = player_positions[player_key]["y"]
 
-        # Update position based on direction
         if direction == "UP":
             new_y = max(0, current_y - self.game.player_speed)
         elif direction == "DOWN":
@@ -82,25 +104,22 @@ class GameConsumer(AsyncWebsocketConsumer):
         self.game.player_positions = player_positions
         self.game.save()
 
-    async def mark_player_ready(self):
-        """Marks a player as ready and starts the game when both are ready."""
-        if len(self.game.ready_players) < 2:
-            self.game.ready_players.append("player")
-        
-        if len(self.game.ready_players) == 2:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'game_start',
-                    'status': 'game_starting',
-                    'message': 'Both players are ready. Game is starting!'
-                }
-            )
-            self.game.status = 'in_progress'
-            await sync_to_async(self.game.save)()
+    async def start_game(self):
+        """Starts the game when both players are ready."""
+        self.game.status = "in_progress"
+        await sync_to_async(self.game.save)()
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "game_start",
+                "status": "game_starting",
+                "message": "Game is starting now!"
+            }
+        )
 
     async def calculate_ball_position(self):
-        """Updates ball movement based on game logic and saves the updated state."""
+        """Updates ball movement based on game logic and saves it."""
         game_logic = Game(self.game)
         game_logic.update_ball_position()
         await sync_to_async(self.game.save)()
@@ -110,9 +129,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'game_update',
-                'status': 'game_update',
-                'state': await sync_to_async(self.get_game_state)()
+                "type": "game_update",
+                "status": "game_update",
+                "state": await sync_to_async(self.get_game_state)()
             }
         )
 
@@ -122,10 +141,12 @@ class GameConsumer(AsyncWebsocketConsumer):
         return {
             "players": {
                 "player1": {
+                    "username": self.game.player1.username if self.game.player1 else "Waiting...",
                     **self.game.player_positions.get("player1", {"x": self.game.x_margin, "y": self.game.p_y_mid}),
                     "score": self.game.player1_score
                 },
                 "player2": {
+                    "username": self.game.player2.username if self.game.player2 else "Waiting...",
                     **self.game.player_positions.get("player2", {"x": self.game.p2_xpos, "y": self.game.p_y_mid}),
                     "score": self.game.player2_score
                 }
@@ -140,4 +161,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def game_start(self, event):
         """Sends game start notification to clients."""
+        await self.send(text_data=json.dumps(event))
+
+    async def player_disconnect(self, event):
+        """Notifies clients when a player disconnects."""
         await self.send(text_data=json.dumps(event))
