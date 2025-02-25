@@ -41,25 +41,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 async function connectToOnlineGame() {
     try {
+        console.log("DEBUG: Requesting to join an online match...");
+
         // Fetch or create a new game session
-        const response = await fetch("http://localhost:8000/match/join/");
+        const response = await fetch(`http://localhost:8000/match/join/?nocache=${Date.now()}`);
         if (!response.ok) throw new Error("Failed to join online match");
 
         const data = await response.json();
         if (data && data.game_key && data.player_id) {
-            console.log("Connected to game session:", data.game_key);
+            console.log("✅ Connected to game session:", data.game_key);
             playerId = data.player_id;  // Store player ID globally
-            return setupWebSocket(data.game_key);
+            setupWebSocket(data.game_key);
+        } else {
+            console.error("🚨 ERROR: No game_key or player_id received from server.");
         }
     } catch (error) {
-        console.error("Error joining online match:", error);
+        console.error("❌ Error joining online match:", error);
     }
 }
 
+function setupWebSocket(gameKey) {
+    console.log("DEBUG: Attempting to open WebSocket for gameKey:", gameKey);
 
-function setupWebSocket(gameKey)
-{
-    const socket = new WebSocket(`ws://localhost:8000/ws/game/${gameKey}/`);
+    const socket = new WebSocket(`ws://127.0.0.1:8000/ws/game/${gameKey}/`);
 
     // Init game board
     const board = document.getElementById("board");
@@ -68,18 +72,19 @@ function setupWebSocket(gameKey)
     const context = board.getContext("2d");
 
     socket.onopen = () => {
-        console.log("WebSocket connected:", gameKey);
+        console.log("✅ WebSocket successfully connected:", gameKey);
         if (playerId) {
+            console.log("📤 Sending 'ready' signal with player ID:", playerId);
             socket.send(JSON.stringify({ action: "ready", player_id: playerId })); // Send player ID
         }
     };
 
     socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        console.log("Received WebSocket message:", message);
+        console.log("📩 Received WebSocket message:", message);
 
         if (message.status === "game_starting") {
-            console.log("Game is starting!");
+            console.log("🎮 Game is starting!");
             document.addEventListener("keydown", (event) => keyDownHandlerOnline(event, socket));
             document.addEventListener("keyup", (event) => keyUpHandlerOnline(event, socket));
         } else if (message.status === "game_update") {
@@ -89,17 +94,18 @@ function setupWebSocket(gameKey)
 
     window.addEventListener("beforeunload", () => {
         if (socket.readyState === WebSocket.OPEN) {
+            console.log("📤 Sending STOP command before unload...");
             socket.send(JSON.stringify({ action: "move", player_id: playerId, direction: "STOP" }));
         }
     });
 
     socket.onclose = () => {
-        console.log("WebSocket Closed.");
+        console.log("⚠️ WebSocket Closed.");
         document.removeEventListener("keydown", keyDownHandlerOnline);
         document.removeEventListener("keyup", keyUpHandlerOnline);
     };
 
-    socket.onerror = (error) => console.error("WebSocket Error:", error);
+    socket.onerror = (error) => console.error("❌ WebSocket Error:", error);
 }
 
 

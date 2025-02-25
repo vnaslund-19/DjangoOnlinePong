@@ -9,17 +9,24 @@ def pong_game(request):
 
 def join_match(request):
     """Assigns player to an available match or creates a new one."""
-    player_id = str(uuid.uuid4())  # Assign a unique player ID
-
-    # Check for an open game
-    open_game = PongGame.objects.filter(status="pending", player1_id__isnull=False, player2_id__isnull=True).first()
+    
+    # ✅ Look for an existing game that is still pending and has only one player
+    open_game = PongGame.objects.filter(status="pending", player2_id__isnull=True).first()
 
     if open_game:
-        open_game.player2_id = player_id  # Assign the second player
-        open_game.status = "in_progress"
+        open_game.player2_id = str(uuid.uuid4())  # Assign a new unique player ID
+        open_game.status = "in_progress"  # ✅ Start the game when the second player joins
         open_game.save()
-        return JsonResponse({"game_key": str(open_game.game_key), "player_id": player_id})
+        print(f"✅ [join_match] Assigned Player 2 to game: {open_game.game_key}")
+        return JsonResponse({"game_key": str(open_game.game_key)})
 
-    # No open game found, create a new game
-    new_game = PongGame.objects.create(player1_id=player_id, game_key=uuid.uuid4(), status="pending")
-    return JsonResponse({"game_key": str(new_game.game_key), "player_id": player_id})
+    # ✅ If no open game exists, create a new one
+    new_game = PongGame.objects.create(
+        player1_id=str(uuid.uuid4()), 
+        game_key=uuid.uuid4(), 
+        status="pending"  # 🔥 ENSURE it's pending
+    )
+    print(f"✅ [join_match] Created new game: {new_game.game_key}, Status: {new_game.status}")
+    
+    return JsonResponse({"game_key": str(new_game.game_key)})
+    

@@ -92,7 +92,6 @@ class PongGame(models.Model):
             self.player1_id = player_id
         elif not self.player2_id:
             self.player2_id = player_id
-            self.status = "in_progress"  # Start the game when the second player joins
         else:
             return False  # Game is already full
 

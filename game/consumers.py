@@ -14,12 +14,14 @@ class GameConsumer(AsyncWebsocketConsumer):
         # Assign a unique player ID (UUID)
         self.player_id = str(uuid.uuid4())
 
-        # Fetch or create game
-        self.game = await sync_to_async(self.get_or_create_game)(self.game_key)
+        # ✅ FIX: Properly Await Database Call
+        self.game = await sync_to_async(self._sync_get_or_create_game)()
+        print(f"DEBUG: self.game -> {self.game}, Status: {self.game.status}")
 
         # Assign the player to the game
-        success = await sync_to_async(self.assign_player)(self.player_id)
+        success = await self.assign_player(self.player_id)
         if not success:
+            print(f"🚨 [connect] Game {self.game.game_key} is full or finished!")
             await self.close()
             return
 
@@ -30,65 +32,63 @@ class GameConsumer(AsyncWebsocketConsumer):
         if self.game.player1_id and self.game.player2_id and self.game.status != "in_progress":
             await self.start_game()
 
-    @sync_to_async
-    def get_or_create_game(self, game_key):
-        """Fetches an existing game or creates a new one."""
+    def _sync_get_or_create_game(self):
+        """Sync method for fetching or creating a game."""
         game, created = PongGame.objects.get_or_create(
-            game_key=uuid.UUID(game_key),
+            game_key=uuid.UUID(self.game_key),
             defaults={"status": "pending"}
         )
         return game
 
-    @sync_to_async
-    def assign_player(self, player_id): # NEW, for mini-project
-        """Assigns a player to the game. If the second player joins, start the game."""
+    async def assign_player(self, player_id):
+        """Ensures safe database modification when assigning players."""
+        return await sync_to_async(self._sync_assign_player)(player_id)
+
+    def _sync_assign_player(self, player_id):
+        """Sync method to safely assign players without async issues."""
         if self.game.status == "finished":
-            return False  # Game is over, don't accept new players
+            return False  
 
         if not self.game.player1_id:
             self.game.player1_id = player_id
         elif not self.game.player2_id:
             self.game.player2_id = player_id
-            self.game.status = "in_progress"  # Start the game when the second player joins
         else:
-            return False  # Game is already full
+            return False  
 
         self.game.save()
         return True
 
     async def disconnect(self, close_code):
         """Handles player disconnection."""
+        await sync_to_async(self._sync_handle_disconnect)()
+
+        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+    def _sync_handle_disconnect(self):
+        """Sync method to handle player disconnection."""
         if self.player_id == self.game.player1_id:
             self.game.player1_id = None
         elif self.player_id == self.game.player2_id:
             self.game.player2_id = None
 
-        await sync_to_async(self.game.save)()
+        self.game.save()
 
-        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
-
-        # Delete the game if both players leave
         if not self.game.player1_id and not self.game.player2_id:
-            await sync_to_async(self.game.delete)()
-        else:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'player_disconnect',
-                    'status': 'player_disconnected',
-                    'message': f'A player has disconnected.'
-                }
-            )
+            self.game.delete()
 
     async def receive(self, text_data):
         """Handles incoming WebSocket messages."""
         try:
             data = json.loads(text_data)
             action = data.get("action")
-            direction = data.get("direction")
 
             if action == "move":
+                direction = data.get("direction")
                 await self.update_player_movement(direction)
+            elif action == "ready":
+                print("DEBUG: Player is ready.")  # ✅ Acknowledge the "ready" message
+                return  
             else:
                 await self.send(json.dumps({"status": "error", "message": f"Unknown action: {action}"}))
 
@@ -99,9 +99,12 @@ class GameConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             await self.send(json.dumps({"status": "error", "message": str(e)}))
 
-    @sync_to_async
-    def update_player_movement(self, direction):
+    async def update_player_movement(self, direction):
         """Updates player movement based on direction."""
+        await sync_to_async(self._sync_update_player_movement)(direction)
+
+    def _sync_update_player_movement(self, direction):
+        """Sync method to update player movement safely."""
         if self.player_id == self.game.player1_id:
             player_key = "player1"
         elif self.player_id == self.game.player2_id:
@@ -125,23 +128,22 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def start_game(self):
         """Starts the game when both players are ready."""
-        self.game.status = "in_progress"
-        await sync_to_async(self.game.save)()
+        await sync_to_async(self._sync_start_game)()
 
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "game_start",
-                "status": "game_starting",
-                "message": "Game is starting now!"
-            }
-        )
+    def _sync_start_game(self):
+        """Sync method to start game."""
+        self.game.status = "in_progress"
+        self.game.save()
 
     async def calculate_ball_position(self):
         """Updates ball movement based on game logic and saves it."""
         game_logic = Game(self.game)
         game_logic.update_ball_position()
-        await sync_to_async(self.game.save)()
+        await sync_to_async(self._sync_save_game)()
+
+    def _sync_save_game(self):
+        """Sync method to save game state."""
+        self.game.save()
 
     async def broadcast_game_state(self):
         """Broadcasts updated game state to all players."""
